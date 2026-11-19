@@ -1,0 +1,22 @@
+{
+  "name": "strikeforce-6v6",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -b --pretty"
+  },
+  "dependencies": {
+    "jszip": "^3.10.1",
+    "three": "0.160.0"
+  },
+  "devDependencies": {
+    "@types/jszip": "^3.4.0",
+    "@types/three": "^0.160.0",
+    "typescript": "~5.7.2",
+    "vite": "^6.0.0"
+  }
+}
