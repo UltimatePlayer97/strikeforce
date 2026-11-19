@@ -1,0 +1,81 @@
+newmtl vltor_cs_weapons-pricel
+Ka 1 1 1
+Kd 1 1 1
+Ks 0.3 0.3 0.3
+Ns 60
+illum 2
+map_Kd textures/deniel_ironsights.png
+
+newmtl vltor_cs_weapons-marks
+Ka 1 1 1
+Kd 1 1 1
+Ks 0.3 0.3 0.3
+Ns 60
+illum 2
+
+newmtl vltor_weapons-m4
+Ka 1 1 1
+Kd 1 1 1
+Ks 0.3 0.3 0.3
+Ns 60
+illum 2
+map_Kd textures/m4.png
+
+newmtl vltor_cs_weapons-grip
+Ka 1 1 1
+Kd 1 1 1
+Ks 0.3 0.3 0.3
+Ns 60
+illum 2
+map_Kd textures/zenith_grip.png
+
+newmtl m4_muzzlebrake
+Ka 1 1 1
+Kd 1 1 1
+Ks 0.3 0.3 0.3
+Ns 60
+illum 2
+map_Kd textures/m4_muzzlebrake.png
+
+newmtl vltor_cs_weapons-magazine
+Ka 1 1 1
+Kd 1 1 1
+Ks 0.3 0.3 0.3
+Ns 60
+illum 2
+map_Kd textures/pmag_sand.png
+
+newmtl vltor_cs_weapons-m4
+Ka 1 1 1
+Kd 1 1 1
+Ks 0.3 0.3 0.3
+Ns 60
+illum 2
+map_Kd textures/m4.png
+
+newmtl kollimator_high
+Ka 1 1 1
+Kd 1 1 1
+Ks 0.3 0.3 0.3
+Ns 60
+illum 2
+map_Kd textures/h1.png
+
+newmtl optic_glass_round
+Ka 1 1 1
+Kd 0.05 0.05 0.05
+Ks 0.3 0.3 0.3
+Ns 60
+illum 2
+d 0.35
+
+newmtl Suppressor
+Ka 1 1 1
+Kd 1 1 1
+Ks 0.3 0.3 0.3
+Ns 60
+illum 2
+map_Kd textures/ebr_silencer.png
+
+newmtl none
+Kd 0.5 0.5 0.5
