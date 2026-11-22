@@ -1,50 +1,27 @@
-import type { Soldier, Team } from '../types';
+import { allSoldiers, matchState } from '../game/state';
+import type { Team } from '../types';
+import { $ } from '../util/dom';
 
-export function showScoreboard(): void {
-  document.getElementById('scoreboard-overlay')!.classList.remove('hidden');
+function buildRows(team: Team): string {
+  return allSoldiers
+    .filter((s) => s.team === team)
+    .sort((a, b) => b.kills - a.kills || a.deaths - b.deaths)
+    .map(
+      (s) => `
+        <tr class="${s.isPlayer ? 'bg-blue-500/20 font-bold text-white' : 'text-slate-200'}">
+          <td class="py-1.5 px-2">${s.name} ${s.isPlayer ? '<span class="text-[10px] text-sky-400">(YOU)</span>' : ''}</td>
+          <td class="py-1.5 px-2 text-[11px] ${s.alive ? 'text-emerald-400' : 'text-red-400'}">${s.alive ? 'ACTIVE' : 'KIA'}</td>
+          <td class="py-1.5 px-2 text-right mono font-bold">${s.kills}</td>
+          <td class="py-1.5 px-2 text-right mono text-slate-400">${s.deaths}</td>
+        </tr>
+      `,
+    )
+    .join('');
 }
 
-export function hideScoreboard(): void {
-  document.getElementById('scoreboard-overlay')!.classList.add('hidden');
-}
-
-export function updateScoreboard(
-  alphaSoldiers: Soldier[],
-  bravoSoldiers: Soldier[],
-  alphaScore: number,
-  bravoScore: number
-): void {
-  const alphaBody = document.getElementById('sb-alpha-body')!;
-  const bravoBody = document.getElementById('sb-bravo-body')!;
-  const alphaScoreEl = document.getElementById('sb-alpha-score')!;
-  const bravoScoreEl = document.getElementById('sb-bravo-score')!;
-
-  alphaScoreEl.textContent = alphaScore.toString();
-  bravoScoreEl.textContent = bravoScore.toString();
-
-  alphaBody.innerHTML = alphaSoldiers.map(s => `
-    <tr class="${!s.isAlive ? 'opacity-40' : ''} ${s.isHuman ? 'font-bold' : ''}">
-      <td class="py-1.5 px-2">${s.name}${s.isHuman ? ' <span class="text-[9px] text-sky-400">(YOU)</span>' : ''}</td>
-      <td class="py-1.5 px-2">
-        <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold ${s.isAlive ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}">
-          ${s.isAlive ? 'ALIVE' : 'KIA'}
-        </span>
-      </td>
-      <td class="py-1.5 px-2 text-right mono">${s.kills}</td>
-      <td class="py-1.5 px-2 text-right mono">${s.deaths}</td>
-    </tr>
-  `).join('');
-
-  bravoBody.innerHTML = bravoSoldiers.map(s => `
-    <tr class="${!s.isAlive ? 'opacity-40' : ''} ${s.isHuman ? 'font-bold' : ''}">
-      <td class="py-1.5 px-2">${s.name}${s.isHuman ? ' <span class="text-[9px] text-sky-400">(YOU)</span>' : ''}</td>
-      <td class="py-1.5 px-2">
-        <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold ${s.isAlive ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}">
-          ${s.isAlive ? 'ALIVE' : 'KIA'}
-        </span>
-      </td>
-      <td class="py-1.5 px-2 text-right mono">${s.kills}</td>
-      <td class="py-1.5 px-2 text-right mono">${s.deaths}</td>
-    </tr>
-  `).join('');
+export function renderScoreboard(): void {
+  $('sb-alpha-score').textContent = String(matchState.alphaScore);
+  $('sb-bravo-score').textContent = String(matchState.bravoScore);
+  $('sb-alpha-body').innerHTML = buildRows('ALPHA');
+  $('sb-bravo-body').innerHTML = buildRows('BRAVO');
 }

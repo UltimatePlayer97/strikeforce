@@ -1,248 +1,221 @@
-import type { GameSettings, Role, Team } from '../types';
-import { WEAPON_PRESETS } from '../weapons/custom';
-import { loadCustomWeapon, resetToBaseWeapon, applyCustomWeapon } from '../weapons/custom';
-import { createWeaponInstance, WEAPON_STATS } from '../weapons/weapon';
+import * as THREE from 'three';
+import { sfx } from '../audio/SoundFX';
+import { camera, canvas } from '../core/renderer';
+import { activeSpawns } from '../game/spawns';
+import { game, keys, loadout, matchState } from '../game/state';
+import type { AiSkill, WeaponId } from '../types';
+import { $, storage } from '../util/dom';
+import { isWeaponId, WEAPONS } from '../weapons/defs';
+import { equipWeapon } from '../weapons/viewmodel';
 
-interface MenuCallbacks {
-  onDeploy: (role: Role) => void;
-  onSettingsChange: (settings: Partial<GameSettings>) => void;
-  onWeaponChange: (role: Role, customData: any) => void;
-  onWeaponReset: () => void;
-  onMultiplayerNew: (relayUrl: string, name: string, room: string, team: Team) => void;
-  onMultiplayerJoin: (relayUrl: string, name: string, room: string, team: Team) => void;
-  onMultiplayerLeave: () => void;
-  onMultiplayerCopy: () => void;
+function nearOwnSpawn(): boolean {
+  const hp = game.humanPlayer;
+  const spawns = activeSpawns(hp.team);
+  const sp = spawns[hp.spawnIdx % spawns.length];
+  return Math.hypot(hp.pos.x - sp.x, hp.pos.z - sp.z) < 7;
 }
 
-let callbacks: MenuCallbacks | null = null;
-let currentRole: Role = 'ASSAULT';
-let currentSettings: GameSettings = {
-  sensitivity: 1.0,
-  adsSensitivity: 1.0,
-  fov: 75,
-  cameraBob: true,
-  aiSkill: 'VETERAN',
-  masterVolume: 1.0,
-  sfxVolume: 1.0
-};
-
-export function initMenu(cb: MenuCallbacks): void {
-  callbacks = cb;
-  setupEventListeners();
-  populateLoadoutGrid();
-  populateWeaponPresets();
-}
-
-function setupEventListeners(): void {
-  // Loadout buttons
-  document.getElementById('loadout-grid')!.addEventListener('click', (e) => {
-    const btn = (e.target as HTMLElement).closest('[data-role]');
-    if (btn) {
-      currentRole = btn.getAttribute('data-role') as Role;
-      updateLoadoutSelection();
-      callbacks?.onDeploy(currentRole);
-    }
-  });
-
-  // Settings sliders
-  const sensSlider = document.getElementById('sens-slider') as HTMLInputElement;
-  const adsSensSlider = document.getElementById('ads-sens-slider') as HTMLInputElement;
-  const fovSlider = document.getElementById('fov-slider') as HTMLInputElement;
-
-  sensSlider.addEventListener('input', () => {
-    currentSettings.sensitivity = parseFloat(sensSlider.value);
-    updateSliderValue('sens-val', sensSlider.value);
-    callbacks?.onSettingsChange({ sensitivity: currentSettings.sensitivity });
-  });
-
-  adsSensSlider.addEventListener('input', () => {
-    currentSettings.adsSensitivity = parseFloat(adsSensSlider.value);
-    updateSliderValue('ads-sens-val', adsSensSlider.value);
-    callbacks?.onSettingsChange({ adsSensitivity: currentSettings.adsSensitivity });
-  });
-
-  fovSlider.addEventListener('input', () => {
-    currentSettings.fov = parseInt(fovSlider.value, 10);
-    updateSliderValue('fov-val', fovSlider.value);
-    callbacks?.onSettingsChange({ fov: currentSettings.fov });
-  });
-
-  const cameraBobToggle = document.getElementById('camera-bob-toggle') as HTMLInputElement;
-  cameraBobToggle.addEventListener('change', () => {
-    currentSettings.cameraBob = cameraBobToggle.checked;
-    callbacks?.onSettingsChange({ cameraBob: currentSettings.cameraBob });
-  });
-
-  const aiSkillSelect = document.getElementById('ai-skill-select') as HTMLSelectElement;
-  aiSkillSelect.addEventListener('change', () => {
-    currentSettings.aiSkill = aiSkillSelect.value as GameSettings['aiSkill'];
-    callbacks?.onSettingsChange({ aiSkill: currentSettings.aiSkill });
-  });
-
-  // Weapon preset select
-  const weaponPresetSelect = document.getElementById('weapon-preset-select') as HTMLSelectElement;
-  weaponPresetSelect.addEventListener('change', () => {
-    const presetId = weaponPresetSelect.value;
-    if (presetId && callbacks) {
-      const preset = WEAPON_PRESETS.find(p => p.id === presetId);
-      if (preset) {
-        currentRole = preset.role;
-        updateLoadoutSelection();
-        callbacks.onWeaponChange(preset.role, { preset: preset.id });
-      }
-    }
-  });
-
-  // Weapon file upload
-  const weaponFileInput = document.getElementById('weapon-file-input') as HTMLInputElement;
-  weaponFileInput.addEventListener('change', async (e) => {
-    const file = (e.target as HTMLInputElement).files?.[0];
-    if (file && callbacks) {
-      const customData = await loadCustomWeapon(file);
-      if (customData) {
-        callbacks.onWeaponChange(currentRole, { custom: customData });
-      }
-    }
-    weaponFileInput.value = '';
-  });
-
-  // Reset weapon
-  document.getElementById('reset-weapon-btn')!.addEventListener('click', () => {
-    callbacks?.onWeaponReset();
-  });
-
-  // Multiplayer
-  document.getElementById('mp-new-btn')!.addEventListener('click', () => {
-    const relayUrl = (document.getElementById('mp-relay') as HTMLInputElement).value;
-    const name = (document.getElementById('mp-name') as HTMLInputElement).value || `OPERATOR-${Math.random().toString(36).substr(2, 4).toUpperCase()}`;
-    const room = (document.getElementById('mp-room') as HTMLInputElement).value || generateRoomCode();
-    const team = (document.getElementById('mp-team') as HTMLSelectElement).value as Team;
-    callbacks?.onMultiplayerNew(relayUrl, name, room, team);
-  });
-
-  document.getElementById('mp-join-btn')!.addEventListener('click', () => {
-    const relayUrl = (document.getElementById('mp-relay') as HTMLInputElement).value;
-    const name = (document.getElementById('mp-name') as HTMLInputElement).value || `OPERATOR-${Math.random().toString(36).substr(2, 4).toUpperCase()}`;
-    const room = (document.getElementById('mp-room') as HTMLInputElement).value;
-    const team = (document.getElementById('mp-team') as HTMLSelectElement).value as Team;
-    if (room) callbacks?.onMultiplayerJoin(relayUrl, name, room, team);
-  });
-
-  document.getElementById('mp-leave-btn')!.addEventListener('click', () => {
-    callbacks?.onMultiplayerLeave();
-  });
-
-  document.getElementById('mp-copy-btn')!.addEventListener('click', () => {
-    callbacks?.onMultiplayerCopy();
-  });
-
-  // Deploy button
-  document.getElementById('deploy-btn')!.addEventListener('click', () => {
-    callbacks?.onDeploy(currentRole);
-  });
-}
-
-function populateLoadoutGrid(): void {
-  const grid = document.getElementById('loadout-grid')!;
-  const roles: Role[] = ['ASSAULT', 'SMG', 'LMG', 'SHOTGUN', 'SNIPER'];
-
-  grid.innerHTML = roles.map(role => {
-    const stats = WEAPON_STATS[role];
-    return `
-      <button type="button" data-role="${role}" class="loadout-btn group relative p-3 rounded-xl bg-slate-800/50 border border-slate-700 hover:border-sky-500/50 hover:bg-slate-700/50 transition-all text-left">
-        <div class="text-xs font-extrabold tracking-wider text-slate-400 uppercase">${role}</div>
-        <div class="mt-1 text-sm font-bold text-white group-hover:text-sky-300">${stats.name}</div>
-        <div class="mt-2 grid grid-cols-4 gap-1 text-[10px] text-slate-500">
-          <span>DMG ${stats.damage}</span>
-          <span>RPM ${stats.rpm}</span>
-          <span>MAG ${stats.mag}</span>
-          <span>RNG ${stats.range}m</span>
-        </div>
-        <div class="absolute inset-0 border-2 border-transparent group-hover:border-sky-500/50 rounded-xl pointer-events-none"></div>
-      </button>
-    `;
-  }).join('');
-
-  updateLoadoutSelection();
-}
-
-function updateLoadoutSelection(): void {
-  document.querySelectorAll('.loadout-btn').forEach(btn => {
-    const role = btn.getAttribute('data-role');
-    if (role === currentRole) {
-      btn.classList.add('border-sky-500', 'bg-sky-500/10');
-      btn.classList.remove('border-slate-700', 'bg-slate-800/50');
-    } else {
-      btn.classList.remove('border-sky-500', 'bg-sky-500/10');
-      btn.classList.add('border-slate-700', 'bg-slate-800/50');
-    }
-  });
-}
-
-function populateWeaponPresets(): void {
-  const select = document.getElementById('weapon-preset-select') as HTMLSelectElement;
-  select.innerHTML = '<option value="">Select Preset...</option>' +
-    WEAPON_PRESETS.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
-}
-
-function updateSliderValue(id: string, value: string): void {
-  const el = document.getElementById(id);
-  if (el) el.textContent = parseFloat(value).toFixed(2);
-}
-
-function generateRoomCode(): string {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let code = '';
-  for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
-  return code;
-}
-
-export function showMenu(): void {
-  document.getElementById('menu-overlay')!.classList.remove('hidden');
-  document.getElementById('hud-layer')!.classList.add('hidden');
-}
-
-export function hideMenu(): void {
-  document.getElementById('menu-overlay')!.classList.add('hidden');
-  document.getElementById('hud-layer')!.classList.remove('hidden');
-}
-
-export function setMenuDeployText(text: string): void {
-  (document.getElementById('deploy-btn') as HTMLButtonElement).textContent = text;
-}
-
-export function setLoadoutNote(text: string): void {
-  (document.getElementById('loadout-note') as HTMLElement).textContent = text;
-}
-
-export function updateMultiplayerStatus(connected: boolean, roomCode?: string, peers?: any[]): void {
-  const statusEl = document.getElementById('mp-status')!;
-  const connectedEl = document.getElementById('mp-connected')!;
-  const rosterEl = document.getElementById('mp-roster')!;
-
-  if (connected) {
-    statusEl.textContent = 'Connected';
-    statusEl.className = 'text-[11px] font-semibold text-emerald-300';
-    connectedEl.classList.remove('hidden');
-    if (roomCode) {
-      (document.getElementById('mp-room') as HTMLInputElement).value = roomCode;
-    }
-    if (peers) {
-      rosterEl.innerHTML = peers.map(p => `<div class="flex items-center gap-2"><span class="w-2 h-2 rounded-full ${p.team === 'ALPHA' ? 'bg-blue-400' : 'bg-red-400'}"></span><span>${p.name}</span><span class="text-slate-500 ml-auto">${p.kills}/${p.deaths}</span></div>`).join('');
-    }
-  } else {
-    statusEl.textContent = 'Offline';
-    statusEl.className = 'text-[11px] font-semibold text-slate-400';
-    connectedEl.classList.add('hidden');
-    (document.getElementById('mp-room') as HTMLInputElement).value = '';
-    rosterEl.innerHTML = '';
+export function renderLoadout(note?: string): void {
+  const loadoutGrid = $('loadout-grid');
+  const loadoutNote = $('loadout-note');
+  const equipped = game.humanPlayer.weaponId === loadout.selected;
+  const text =
+    note !== undefined
+      ? note
+      : equipped
+        ? `Equipped: ${WEAPONS[loadout.selected].cls}`
+        : `Next respawn: ${WEAPONS[loadout.selected].cls}`;
+  loadoutNote.textContent = text;
+  loadoutGrid.innerHTML = '';
+  for (const w of Object.values(WEAPONS)) {
+    const sel = w.id === loadout.selected;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className =
+      'text-left rounded-xl p-2.5 border transition ' +
+      (sel
+        ? 'bg-sky-500/20 border-sky-400 ring-1 ring-sky-400/60'
+        : 'bg-slate-800/70 border-slate-700 hover:bg-slate-700/70');
+    const bars = ['DMG', 'ROF', 'RNG', 'MOB']
+      .map(
+        (lbl, i) =>
+          `<div class="flex items-center gap-1.5"><span class="w-6 text-[9px] font-bold text-slate-400">${lbl}</span>` +
+          `<div class="flex-1 h-1 rounded bg-slate-900 overflow-hidden"><div class="h-full ${sel ? 'bg-sky-400' : 'bg-slate-400'}" style="width:${w.stats[i] * 20}%"></div></div></div>`,
+      )
+      .join('');
+    btn.innerHTML =
+      `<div class="text-[11px] font-extrabold tracking-wider ${sel ? 'text-sky-300' : 'text-white'}">${w.cls}</div>` +
+      `<div class="text-[10px] text-slate-400 mb-1.5">${w.role}</div>` +
+      `<div class="space-y-1">${bars}</div>` +
+      `<div class="mono text-[10px] text-slate-300 mt-1.5">${w.mag} / ${w.reserve}</div>`;
+    btn.addEventListener('click', () => selectLoadout(w.id));
+    loadoutGrid.appendChild(btn);
   }
 }
 
-export function getCurrentRole(): Role {
-  return currentRole;
+function selectLoadout(id: WeaponId): void {
+  loadout.selected = id;
+  storage.set('sf_loadout', id);
+  if (game.humanPlayer.weaponId !== id && (!loadout.started || (game.humanPlayer.alive && nearOwnSpawn()))) {
+    equipWeapon(game.humanPlayer, id);
+  }
+  renderLoadout();
 }
 
-export function getCurrentSettings(): GameSettings {
-  return { ...currentSettings };
+function startDeploy(): void {
+  const menuOverlay = $('menu-overlay');
+  const hudLayer = $('hud-layer');
+  if (!loadout.started) {
+    loadout.started = true;
+    if (game.humanPlayer.weaponId !== loadout.selected) equipWeapon(game.humanPlayer, loadout.selected);
+  }
+  try {
+    sfx.init();
+  } catch (err) {
+    console.error('sfx.init failed', err);
+  }
+  try {
+    const p: Promise<void> | undefined = canvas.requestPointerLock() as unknown as Promise<void> | undefined;
+    if (p && p.catch) {
+      p.catch((err: unknown) => {
+        // Browser blocks re-lock ~1s after ESC. Retry once.
+        console.warn('pointer lock rejected, retry', err);
+        setTimeout(() => {
+          try {
+            canvas.requestPointerLock();
+          } catch {
+            /* ignore */
+          }
+        }, 1100);
+      });
+    }
+  } catch (err) {
+    console.error('requestPointerLock threw', err);
+  }
+  // Fallback: if lock never arrives, still start game (no mouse look until lock)
+  setTimeout(() => {
+    if (document.pointerLockElement !== canvas) {
+      menuOverlay.classList.add('hidden');
+      hudLayer.classList.remove('hidden');
+      matchState.paused = false;
+    }
+  }, 1500);
+  $('deploy-btn').textContent = 'RESUME COMBAT';
+}
+
+function loadSavedSettings(): void {
+  const sensSlider = $<HTMLInputElement>('sens-slider');
+  const adsSensSlider = $<HTMLInputElement>('ads-sens-slider');
+  const fovSlider = $<HTMLInputElement>('fov-slider');
+  const cameraBobToggle = $<HTMLInputElement>('camera-bob-toggle');
+
+  matchState.mouseSensitivity = parseFloat(storage.get('sf_sens') || '1');
+  matchState.adsSensitivity = parseFloat(storage.get('sf_ads_sens') || '1');
+  matchState.baseFieldOfView = THREE.MathUtils.clamp(parseFloat(storage.get('sf_fov') || '75'), 60, 100);
+  matchState.cameraBob = storage.get('sf_camera_bob') !== '0';
+  sensSlider.value = String(matchState.mouseSensitivity);
+  adsSensSlider.value = String(matchState.adsSensitivity);
+  fovSlider.value = String(matchState.baseFieldOfView);
+  cameraBobToggle.checked = matchState.cameraBob;
+  $('sens-val').textContent = matchState.mouseSensitivity.toFixed(2);
+  $('ads-sens-val').textContent = matchState.adsSensitivity.toFixed(2);
+  $('fov-val').textContent = String(matchState.baseFieldOfView);
+}
+
+/** Restores the saved class selection (call before the roster is created). */
+export function restoreSavedLoadout(): void {
+  const saved = storage.get('sf_loadout');
+  if (isWeaponId(saved)) loadout.selected = saved;
+}
+
+/** Wires up menu, settings, loadout and pointer-lock handling. Call once DOM is ready. */
+export function initMenu(): void {
+  const menuOverlay = $('menu-overlay');
+  const hudLayer = $('hud-layer');
+  const sensSlider = $<HTMLInputElement>('sens-slider');
+  const adsSensSlider = $<HTMLInputElement>('ads-sens-slider');
+  const fovSlider = $<HTMLInputElement>('fov-slider');
+  const cameraBobToggle = $<HTMLInputElement>('camera-bob-toggle');
+  const aiSkillSelect = $<HTMLSelectElement>('ai-skill-select');
+
+  loadSavedSettings();
+
+  sensSlider.addEventListener('input', () => {
+    matchState.mouseSensitivity = parseFloat(sensSlider.value);
+    $('sens-val').textContent = matchState.mouseSensitivity.toFixed(2);
+    storage.set('sf_sens', String(matchState.mouseSensitivity));
+  });
+
+  adsSensSlider.addEventListener('input', () => {
+    matchState.adsSensitivity = parseFloat(adsSensSlider.value);
+    $('ads-sens-val').textContent = matchState.adsSensitivity.toFixed(2);
+    storage.set('sf_ads_sens', String(matchState.adsSensitivity));
+  });
+
+  fovSlider.addEventListener('input', () => {
+    matchState.baseFieldOfView = parseInt(fovSlider.value, 10);
+    $('fov-val').textContent = String(matchState.baseFieldOfView);
+    camera.fov = matchState.baseFieldOfView;
+    camera.updateProjectionMatrix();
+    storage.set('sf_fov', String(matchState.baseFieldOfView));
+  });
+
+  cameraBobToggle.addEventListener('change', () => {
+    matchState.cameraBob = cameraBobToggle.checked;
+    storage.set('sf_camera_bob', matchState.cameraBob ? '1' : '0');
+  });
+
+  aiSkillSelect.addEventListener('change', () => {
+    matchState.aiSkill = aiSkillSelect.value as AiSkill;
+  });
+
+  $('deploy-btn').addEventListener('click', startDeploy);
+
+  // Enter = deploy when menu open (button may sit below fold on short windows)
+  document.addEventListener('keydown', (e: KeyboardEvent) => {
+    const tag = document.activeElement?.tagName;
+    if (
+      e.code === 'Enter' &&
+      matchState.paused &&
+      !menuOverlay.classList.contains('hidden') &&
+      tag !== 'INPUT' &&
+      tag !== 'SELECT'
+    ) {
+      e.preventDefault();
+      startDeploy();
+    }
+  });
+
+  document.addEventListener('pointerlockerror', () => {
+    console.warn('pointerlockerror');
+    setTimeout(() => {
+      try {
+        canvas.requestPointerLock();
+      } catch {
+        /* ignore */
+      }
+    }, 1100);
+  });
+
+  // Click canvas while paused = deploy too
+  canvas.addEventListener('click', () => {
+    if (matchState.paused && document.pointerLockElement !== canvas) startDeploy();
+  });
+
+  document.addEventListener('pointerlockchange', () => {
+    const locked = document.pointerLockElement === canvas;
+    if (!locked) {
+      matchState.paused = true;
+      for (const k in keys) keys[k] = false;
+      game.isMouseDown = false;
+      game.isADS = false;
+      $('ads-vignette').style.opacity = '0';
+      menuOverlay.classList.remove('hidden');
+      renderLoadout();
+    } else {
+      matchState.paused = false;
+      menuOverlay.classList.add('hidden');
+      hudLayer.classList.remove('hidden');
+    }
+  });
 }

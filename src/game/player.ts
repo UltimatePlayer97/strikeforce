@@ -1,417 +1,267 @@
 import * as THREE from 'three';
-import type { Soldier, Role, Team, GameSettings, InputState } from '../types';
-import { RAGDOLL_NODE } from '../types';
-import { createWeaponInstance, fireWeapon, startReload, updateReload, canFire, applyWeaponOffset, createBaseWeaponModel } from '../weapons/weapon';
-import { throwGrenade, throwSmoke } from '../weapons/projectile';
-import { VerletRagdoll } from '../physics/ragdoll';
-import { hasLineOfSight, getFloorHeightAt, resolveCylinderCollision } from '../physics/collision';
-import { getScene, getCamera } from '../renderer';
-import { sfx } from '../audio/sound';
-import { setHumanPlayerRef } from '../audio/sound';
+import { sfx } from '../audio/SoundFX';
+import { fireWeapon, updateReload } from '../combat/hitscan';
+import { camera } from '../core/renderer';
+import { applyRagdollToSoldierRig, RAGDOLL_NODE } from '../physics/ragdoll';
+import { updateSpawnProtection } from '../ui/feedback';
+import { $ } from '../util/dom';
+import { weaponOf } from '../weapons/defs';
+import { fpWeaponRoot, muzzleFlashMesh, muzzlePointLight, weaponView } from '../weapons/viewmodel';
+import { getFloorHeightAt, raycastMap, resolveCylinderCollision } from '../world/collision';
+import { regenSoldier } from './damage';
+import { respawnSoldier } from './match';
+import { deathCam, game, keys, matchState, weaponRecoilOffset } from './state';
 
-export class HumanPlayer {
-  static instance: HumanPlayer | null = null;
+export function updateHumanPlayer(dt: number): void {
+  if (!game.humanPlayer.alive) {
+    // Orbiting 3rd-Person Death Cam watching human player's Verlet ragdoll!
+    game.humanPlayer.respawnTimer -= dt;
+    $('death-timer-text').textContent = `${Math.max(0, game.humanPlayer.respawnTimer).toFixed(1)}s`;
 
-  public soldier: Soldier;
-  public weaponModel: THREE.Group | null = null;
-  public weaponPivot: THREE.Group;
-  public cameraPivot: THREE.Group;
-  public adsProgress = 0;
-  public spawnProtectionTime = 0;
-  public lastFootstepTime = 0;
-  public lastFootstepPos = new THREE.Vector3();
+    if (game.humanPlayer.ragdoll) {
+      game.humanPlayer.ragdoll.step(dt);
+      applyRagdollToSoldierRig(game.humanPlayer.rig, game.humanPlayer.ragdoll);
 
-  private input: InputState;
-  private settings: GameSettings;
-  private yaw = 0;
-  private pitch = 0;
-  private vel = new THREE.Vector3();
-  private isGrounded = false;
-  private jumpCooldown = 0;
-  private stanceHeight = 1.7;
-  private crouchHeight = 0.9;
-  private proneHeight = 0.4;
-  private currentHeight = 1.7;
-  private targetHeight = 1.7;
+      const chestPos = game.humanPlayer.ragdoll.nodes[RAGDOLL_NODE.CHEST];
+      deathCam.killcamTimer = Math.max(0, deathCam.killcamTimer - dt);
+      if (deathCam.killcamTimer > 0 && deathCam.killer) {
+        const killerForward = new THREE.Vector3(
+          -Math.sin(deathCam.killer.yaw),
+          0,
+          -Math.cos(deathCam.killer.yaw),
+        );
+        const shoulder = new THREE.Vector3(Math.cos(deathCam.killer.yaw), 0, -Math.sin(deathCam.killer.yaw));
+        const desiredCam = deathCam.killer.pos
+          .clone()
+          .add(new THREE.Vector3(0, 1.42, 0))
+          .addScaledVector(killerForward, -2.35)
+          .addScaledVector(shoulder, 0.78);
+        const camDir = new THREE.Vector3().subVectors(desiredCam, deathCam.killer.pos);
+        const camDist = camDir.length() || 1;
+        camDir.divideScalar(camDist);
+        const wallCheck = raycastMap(
+          deathCam.killer.pos.clone().add(new THREE.Vector3(0, 1.35, 0)),
+          camDir,
+          camDist,
+        );
+        if (wallCheck.hit)
+          desiredCam
+            .copy(deathCam.killer.pos)
+            .add(new THREE.Vector3(0, 1.2, 0))
+            .addScaledVector(camDir, Math.max(0.7, wallCheck.distance - 0.25));
+        deathCam.currentPos.lerp(desiredCam, Math.min(1, dt * 9));
+        deathCam.lookTarget.lerp(chestPos, Math.min(1, dt * 12));
+        camera.position.copy(deathCam.currentPos);
+        camera.lookAt(deathCam.lookTarget);
+      } else {
+        deathCam.angle += dt * 0.45;
+        const orbitRadius = 3.2;
+        const desiredCam = new THREE.Vector3(
+          chestPos.x + Math.sin(deathCam.angle) * orbitRadius,
+          chestPos.y + 1.45,
+          chestPos.z + Math.cos(deathCam.angle) * orbitRadius,
+        );
 
-  constructor(role: Role, team: Team, spawnPos: THREE.Vector3, spawnYaw: number, settings: GameSettings) {
-    this.settings = settings;
-    this.input = {
-      forward: false, backward: false, left: false, right: false,
-      sprint: false, jump: false, crouch: false,
-      fire: false, ads: false, reload: false,
-      grenade: false, smoke: false, melee: false, interact: false,
-      scoreboard: false, pause: false,
-      mouseDeltaX: 0, mouseDeltaY: 0
-    };
-
-    this.soldier = {
-      id: 0,
-      team,
-      role,
-      name: 'ALPHA-LEAD',
-      isHuman: true,
-      isAlive: true,
-      pos: spawnPos.clone(),
-      vel: new THREE.Vector3(),
-      yaw: spawnYaw,
-      pitch: 0,
-      hp: 100,
-      maxHp: 100,
-      armor: 0,
-      weapon: createWeaponInstance(role),
-      grenades: 2,
-      smokes: 2,
-      state: 'HUNTING',
-      stance: 'stand',
-      isSprinting: false,
-      isADS: false,
-      ragdoll: null,
-      deathTime: 0,
-      killerId: null,
-      path: [],
-      pathIndex: 0,
-      targetNode: -1,
-      lastSeenEnemy: null,
-      engagementRange: 55,
-      reactionTimer: 0,
-      shootCooldown: 0,
-      reloadTimer: 0,
-      networkId: null,
-      lastUpdate: performance.now(),
-      kills: 0,
-      deaths: 0
-    };
-
-    this.cameraPivot = new THREE.Group();
-    this.cameraPivot.position.copy(this.soldier.pos);
-    this.cameraPivot.position.y += this.currentHeight;
-    getScene().add(this.cameraPivot);
-
-    // Sync camera to cameraPivot initially
-    const camera = getCamera();
-    camera.position.copy(this.cameraPivot.position);
-    camera.rotation.copy(this.cameraPivot.rotation);
-    camera.updateMatrixWorld();
-
-    this.weaponPivot = new THREE.Group();
-    this.cameraPivot.add(this.weaponPivot);
-
-    this.createWeaponModel();
-    HumanPlayer.instance = this;
-    setHumanPlayerRef(this);
-  }
-
-  private createWeaponModel(): void {
-    if (this.weaponModel) {
-      this.weaponPivot.remove(this.weaponModel);
-    }
-
-    if (this.soldier.weapon.customModel) {
-      this.weaponModel = this.soldier.weapon.customModel.clone();
-      this.weaponModel.rotation.y = Math.PI;
-    } else {
-      this.weaponModel = createBaseWeaponModel(this.soldier.role);
-    }
-
-    applyWeaponOffset(this.soldier.role, this.weaponModel);
-    this.weaponPivot.add(this.weaponModel);
-  }
-
-  setInput(input: InputState): void {
-    this.input = input;
-  }
-
-  update(dt: number, allSoldiers: Soldier[], currentTime: number): void {
-    if (!this.soldier.isAlive) return;
-
-    this.updateStance(dt);
-    this.updateMovement(dt);
-    this.updateCamera(dt);
-    this.updateWeapon(dt, allSoldiers, currentTime);
-    this.updateFootsteps(dt);
-    this.spawnProtectionTime = Math.max(0, this.spawnProtectionTime - dt);
-  }
-
-  private updateStance(dt: number): void {
-    if (this.input.crouch) {
-      this.soldier.stance = this.soldier.stance === 'prone' ? 'crouch' : 'prone';
-      this.input.crouch = false; // Toggle
-    }
-
-    this.targetHeight = this.soldier.stance === 'stand' ? this.stanceHeight :
-                        this.soldier.stance === 'crouch' ? this.crouchHeight : this.proneHeight;
-
-    this.currentHeight = THREE.MathUtils.lerp(this.currentHeight, this.targetHeight, dt * 10);
-    this.cameraPivot.position.y = this.soldier.pos.y + this.currentHeight;
-  }
-
-  private updateMovement(dt: number): void {
-    const forward = new THREE.Vector3(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
-    const right = new THREE.Vector3(Math.cos(this.yaw), 0, -Math.sin(this.yaw));
-
-    let moveX = 0, moveZ = 0;
-    if (this.input.forward) moveZ -= 1;
-    if (this.input.backward) moveZ += 1;
-    if (this.input.left) moveX -= 1;
-    if (this.input.right) moveX += 1;
-
-    const moveLen = Math.hypot(moveX, moveZ);
-    if (moveLen > 0) {
-      moveX /= moveLen;
-      moveZ /= moveLen;
-    }
-
-    this.soldier.isSprinting = this.input.sprint && moveLen > 0 && this.soldier.stance === 'stand';
-
-    let speed = this.soldier.stance === 'prone' ? 1.2 :
-                this.soldier.stance === 'crouch' ? 3.2 :
-                this.soldier.isSprinting ? 7.5 : 5.2;
-
-    this.vel.x = (forward.x * moveZ + right.x * moveX) * speed;
-    this.vel.z = (forward.z * moveZ + right.z * moveX) * speed;
-
-    if (this.input.jump && this.isGrounded && this.jumpCooldown <= 0 && this.soldier.stance !== 'prone') {
-      this.vel.y = 6.8;
-      this.isGrounded = false;
-      this.jumpCooldown = 0.3;
-    }
-    this.jumpCooldown = Math.max(0, this.jumpCooldown - dt);
-
-    this.vel.y -= 22 * dt;
-    this.soldier.pos.addScaledVector(this.vel, dt);
-
-    const floorY = getFloorHeightAt(this.soldier.pos.x, this.soldier.pos.z);
-    if (this.soldier.pos.y <= floorY + this.currentHeight * 0.5) {
-      this.soldier.pos.y = floorY + this.currentHeight * 0.5;
-      this.vel.y = 0;
-      this.isGrounded = true;
-    } else {
-      this.isGrounded = false;
-    }
-
-    resolveCylinderCollision(this.soldier.pos, 0.35, this.currentHeight);
-
-    this.soldier.vel.copy(this.vel);
-    this.soldier.pos.y = this.soldier.pos.y; // Sync
-  }
-
-  private updateCamera(dt: number): void {
-    const { x, y } = this.consumeMouseDelta();
-    this.yaw -= x;
-    this.pitch = THREE.MathUtils.clamp(this.pitch - y, -Math.PI / 2 + 0.05, Math.PI / 2 - 0.05);
-
-    this.soldier.yaw = this.yaw;
-    this.soldier.pitch = this.pitch;
-
-    this.cameraPivot.rotation.set(this.pitch, this.yaw, 0);
-    this.cameraPivot.position.x = this.soldier.pos.x;
-    this.cameraPivot.position.z = this.soldier.pos.z;
-
-    // Camera bob
-    if (this.settings.cameraBob && this.isGrounded && (this.input.forward || this.input.backward || this.input.left || this.input.right)) {
-      const bobSpeed = this.soldier.isSprinting ? 14 : 9;
-      const bobAmount = this.soldier.isSprinting ? 0.06 : 0.035;
-      const t = performance.now() / 1000 * bobSpeed;
-      this.cameraPivot.position.y += Math.sin(t) * bobAmount;
-      this.weaponPivot.rotation.z = Math.sin(t * 0.5) * 0.02;
-    } else {
-      this.weaponPivot.rotation.z = THREE.MathUtils.lerp(this.weaponPivot.rotation.z, 0, dt * 8);
-    }
-
-    // Sync actual camera to cameraPivot
-    const camera = getCamera();
-    camera.position.copy(this.cameraPivot.position);
-    camera.rotation.copy(this.cameraPivot.rotation);
-    camera.updateMatrixWorld();
-
-    // ADS transition
-    const targetAds = this.input.ads && this.soldier.weapon.stats.adsZoom < 1 ? 1 : 0;
-    this.adsProgress = THREE.MathUtils.lerp(this.adsProgress, targetAds, dt * (1 / (this.soldier.weapon.stats.adsTime / 1000)) * 2);
-    this.soldier.isADS = this.adsProgress > 0.5;
-  }
-
-  private consumeMouseDelta(): { x: number; y: number } {
-    const dx = this.input.mouseDeltaX;
-    const dy = this.input.mouseDeltaY;
-    this.input.mouseDeltaX = 0;
-    this.input.mouseDeltaY = 0;
-    return { x: dx, y: dy };
-  }
-
-  private getCameraDirection(): THREE.Vector3 {
-    // Compute forward direction from cameraPivot's quaternion (camera.getWorldDirection is broken)
-    const dir = new THREE.Vector3(0, 0, -1);
-    dir.applyQuaternion(this.cameraPivot.quaternion);
-    return dir;
-  }
-
-  private updateWeapon(dt: number, allSoldiers: Soldier[], currentTime: number): void {
-    updateReload(this.soldier.weapon, currentTime);
-
-    if (this.input.reload && !this.soldier.weapon.isReloading) {
-      startReload(this.soldier.weapon, currentTime);
-    }
-
-    if (this.input.fire && canFire(this.soldier.weapon, currentTime)) {
-      const spread = this.soldier.isADS ? this.soldier.weapon.stats.adsSpread : this.soldier.weapon.stats.spread;
-      const recoil = this.soldier.isADS ? this.soldier.weapon.stats.adsRecoil : this.soldier.weapon.stats.recoil;
-
-      const origin = this.cameraPivot.getWorldPosition(new THREE.Vector3());
-      const dir = this.getCameraDirection();
-
-      const results = fireWeapon(this.soldier.weapon, this.soldier, origin, dir, spread, currentTime, true);
-
-      for (const hit of results) {
-        if (hit.hit && hit.target) {
-          const isHeadshot = hit.headshot;
-          const dmg = Math.floor(this.soldier.weapon.stats.damage * (isHeadshot ? this.soldier.weapon.stats.headshotMult : 1));
-          this.applyDamage(hit.target, dmg, hit.position, isHeadshot);
-          sfx.playHitmarker(isHeadshot);
+        // Prevent death cam from clipping inside walls
+        const camDir = new THREE.Vector3().subVectors(desiredCam, chestPos);
+        const camDist = camDir.length();
+        camDir.divideScalar(camDist);
+        const wallCheck = raycastMap(chestPos, camDir, camDist);
+        if (wallCheck.hit) {
+          desiredCam.copy(chestPos).addScaledVector(camDir, Math.max(0.7, wallCheck.distance - 0.35));
         }
+
+        deathCam.currentPos.lerp(desiredCam, Math.min(1, dt * 8));
+        deathCam.lookTarget.lerp(chestPos, Math.min(1, dt * 10));
+        camera.position.copy(deathCam.currentPos);
+        camera.lookAt(deathCam.lookTarget);
+        if (deathCam.killer)
+          $('death-killer-text').textContent = `Spectating — eliminated by ${game.humanPlayer.killerName}`;
       }
-
-      // Recoil
-      this.pitch -= THREE.MathUtils.degToRad(recoil * 0.5);
-      this.yaw += THREE.MathUtils.degToRad((Math.random() - 0.5) * recoil * 0.3);
     }
 
-    if (this.input.grenade) {
-      const origin = this.cameraPivot.getWorldPosition(new THREE.Vector3());
-      const dir = this.getCameraDirection();
-      throwGrenade(this.soldier, origin, dir);
-      this.input.grenade = false;
+    if (game.humanPlayer.respawnTimer <= 0) {
+      respawnSoldier(game.humanPlayer);
     }
-
-    if (this.input.smoke) {
-      const origin = this.cameraPivot.getWorldPosition(new THREE.Vector3());
-      const dir = this.getCameraDirection();
-      throwSmoke(this.soldier, origin, dir);
-      this.input.smoke = false;
-    }
+    return;
   }
 
-  private updateFootsteps(dt: number): void {
-    if (!this.isGrounded) return;
-    const speed = this.vel.length();
-    if (speed < 0.5) return;
+  game.humanPlayer.fireCooldown = Math.max(0, game.humanPlayer.fireCooldown - dt);
+  game.humanPlayer.grenadeCooldown = Math.max(0, (game.humanPlayer.grenadeCooldown || 0) - dt);
+  game.humanPlayer.smokeCooldown = Math.max(0, (game.humanPlayer.smokeCooldown || 0) - dt);
+  updateSpawnProtection(game.humanPlayer, dt);
+  updateReload(game.humanPlayer, dt);
+  regenSoldier(game.humanPlayer, dt);
 
-    const now = performance.now() / 1000;
-    const interval = this.soldier.isSprinting ? 0.3 : this.soldier.stance === 'crouch' ? 0.6 : 0.45;
-    if (now - this.lastFootstepTime > interval) {
-      sfx.playFootstep(this.soldier.pos, this.soldier.isSprinting ? 1.3 : 1);
-      this.lastFootstepTime = now;
-      this.lastFootstepPos.copy(this.soldier.pos);
-    }
-  }
+  // Movement Input
+  const forward = new THREE.Vector3(-Math.sin(game.humanPlayer.yaw), 0, -Math.cos(game.humanPlayer.yaw));
+  const right = new THREE.Vector3(Math.cos(game.humanPlayer.yaw), 0, -Math.sin(game.humanPlayer.yaw));
 
-  private applyDamage(target: Soldier, damage: number, hitPos: THREE.Vector3, isHeadshot: boolean): void {
-    target.hp = Math.max(0, target.hp - damage);
-    if (target.hp <= 0 && target.isAlive) {
-      this.killTarget(target, hitPos, isHeadshot);
-    }
-  }
+  const moveInput = new THREE.Vector3();
+  if (keys['KeyW'] || keys['ArrowUp']) moveInput.add(forward);
+  if (keys['KeyS'] || keys['ArrowDown']) moveInput.sub(forward);
+  if (keys['KeyD'] || keys['ArrowRight']) moveInput.add(right);
+  if (keys['KeyA'] || keys['ArrowLeft']) moveInput.sub(right);
 
-  private killTarget(target: Soldier, hitPos: THREE.Vector3, isHeadshot: boolean): void {
-    target.isAlive = false;
-    target.deathTime = performance.now() / 1000;
-    target.killerId = this.soldier.id;
-    this.soldier.kills++;
-    target.deaths++;
+  const isMoving = moveInput.lengthSq() > 0.001;
+  if (isMoving) moveInput.normalize();
 
-    const impulseDir = target.pos.clone().sub(hitPos).normalize();
-    impulseDir.y = 0.3;
-    target.ragdoll = new VerletRagdoll(
-      target.pos.clone(),
-      target.yaw,
-      target.vel.clone(),
-      hitPos,
-      impulseDir.multiplyScalar(8)
+  // Crouch (hold C). Stand-up blocked while something is overhead.
+  const wantCrouch = !!keys['KeyC'];
+  let crouchTarget = wantCrouch ? 1 : 0;
+  if (!wantCrouch && (game.humanPlayer.crouch || 0) > 0.05) {
+    const headRay = raycastMap(
+      new THREE.Vector3(game.humanPlayer.pos.x, game.humanPlayer.pos.y + 1.0, game.humanPlayer.pos.z),
+      new THREE.Vector3(0, 1, 0),
+      0.85,
     );
+    if (headRay.hit) crouchTarget = 1;
   }
+  game.humanPlayer.crouch = THREE.MathUtils.lerp(
+    game.humanPlayer.crouch || 0,
+    crouchTarget,
+    Math.min(1, dt * 11),
+  );
+  const crouchK = game.humanPlayer.crouch;
+  const isCrouched = crouchK > 0.5;
 
-  takeDamage(amount: number, fromPos: THREE.Vector3): void {
-    if (this.spawnProtectionTime > 0) return;
-    this.soldier.hp = Math.max(0, this.soldier.hp - amount);
-    sfx.playDamageTaken();
-
-    if (this.soldier.hp <= 0 && this.soldier.isAlive) {
-      this.die(fromPos);
+  const isSprinting =
+    (keys['ShiftLeft'] || keys['ShiftRight']) &&
+    isMoving &&
+    !game.isADS &&
+    !game.humanPlayer.reloading &&
+    !isCrouched;
+  if (isMoving && game.humanPlayer.onGround) {
+    game.humanPlayer.footstepTimer = (game.humanPlayer.footstepTimer || 0) - dt * (isSprinting ? 2.45 : 1.55);
+    if (game.humanPlayer.footstepTimer <= 0) {
+      sfx.playFootstep(game.humanPlayer.pos, isCrouched ? 0.45 : isSprinting ? 1.25 : 0.9);
+      game.humanPlayer.footstepTimer = 1;
     }
   }
+  const pw = weaponOf(game.humanPlayer);
+  const moveSpeed =
+    (isSprinting ? 10.6 : game.isADS ? 4.8 : 7.4) *
+    pw.speed *
+    (game.isADS && pw.scope ? 0.6 : 1) *
+    (1 - 0.45 * crouchK);
 
-  die(killerPos: THREE.Vector3): void {
-    this.soldier.isAlive = false;
-    this.soldier.deathTime = performance.now() / 1000;
+  game.humanPlayer.vel.x = moveInput.x * moveSpeed;
+  game.humanPlayer.vel.z = moveInput.z * moveSpeed;
 
-    const impulseDir = this.soldier.pos.clone().sub(killerPos).normalize();
-    impulseDir.y = 0.3;
-    this.soldier.ragdoll = new VerletRagdoll(
-      this.soldier.pos.clone(),
-      this.soldier.yaw,
-      this.soldier.vel.clone(),
-      killerPos,
-      impulseDir.multiplyScalar(10)
-    );
+  // Jump & Gravity
+  if (keys['Space'] && game.humanPlayer.onGround && !isCrouched) {
+    game.humanPlayer.vel.y = 7.8;
+    game.humanPlayer.onGround = false;
+  }
+  game.humanPlayer.vel.y -= 21.0 * dt;
+
+  game.humanPlayer.pos.addScaledVector(game.humanPlayer.vel, dt);
+  resolveCylinderCollision(game.humanPlayer.pos, 0.42, 1.8 - 0.6 * crouchK);
+
+  const floorY = getFloorHeightAt(
+    game.humanPlayer.pos.x,
+    game.humanPlayer.pos.z,
+    game.humanPlayer.pos.y + 0.35,
+  );
+  if (game.humanPlayer.pos.y <= floorY) {
+    game.humanPlayer.pos.y = floorY;
+    game.humanPlayer.vel.y = 0;
+    game.humanPlayer.onGround = true;
+  } else {
+    game.humanPlayer.onGround = false;
   }
 
-  respawn(spawnPos: THREE.Vector3, spawnYaw: number): void {
-    this.soldier.isAlive = true;
-    this.soldier.hp = this.soldier.maxHp;
-    this.soldier.pos.copy(spawnPos);
-    this.vel.set(0, 0, 0);
-    this.yaw = spawnYaw;
-    this.pitch = 0;
-    this.soldier.yaw = spawnYaw;
-    this.soldier.pitch = 0;
-    this.soldier.weapon.ammo = this.soldier.weapon.stats.mag;
-    this.soldier.weapon.reserve = this.soldier.weapon.stats.reserve;
-    this.soldier.weapon.isReloading = false;
-    this.soldier.grenades = 2;
-    this.soldier.smokes = 2;
-    this.soldier.stance = 'stand';
-    this.currentHeight = this.stanceHeight;
-    this.targetHeight = this.stanceHeight;
-    this.cameraPivot.position.copy(spawnPos);
-    this.cameraPivot.position.y += this.currentHeight;
-    this.spawnProtectionTime = 3.0;
-    this.soldier.ragdoll = null;
+  // First-Person Eye Camera Transform
+  const eyeHeight = 1.65 - 0.6 * crouchK;
+  camera.position.set(game.humanPlayer.pos.x, game.humanPlayer.pos.y + eyeHeight, game.humanPlayer.pos.z);
+  if (game.screenShake > 0) {
+    const shakeTime = performance.now() * 0.052;
+    camera.position.x += Math.sin(shakeTime * 1.31) * game.screenShake;
+    camera.position.y += Math.cos(shakeTime * 1.73) * game.screenShake * 0.62;
+    game.screenShake = Math.max(0, game.screenShake - dt * 0.42);
+  }
+  const euler = new THREE.Euler(
+    game.humanPlayer.pitch + weaponRecoilOffset.pitch * 0.45,
+    game.humanPlayer.yaw,
+    0,
+    'YXZ',
+  );
+  camera.quaternion.setFromEuler(euler);
+
+  // Smooth ADS FOV Zoom
+  const baseFov = matchState.baseFieldOfView || 75;
+  const targetFov = game.isADS ? pw.adsFov : isSprinting ? Math.min(105, baseFov + 5) : baseFov;
+  camera.fov = THREE.MathUtils.lerp(camera.fov, targetFov, Math.min(1, dt * 14));
+  camera.updateProjectionMatrix();
+
+  // Viewmodel Position (Hipfire vs Centered Holographic ADS + Bobbing + Reload Tilt)
+  const bobScale = matchState.cameraBob ? 1 : 0;
+  if (isMoving && game.humanPlayer.onGround && bobScale) {
+    game.bobTimer += dt * (isSprinting ? 13 : 8.5);
+  } else if (bobScale) {
+    game.bobTimer += dt * 1.5;
   }
 
-  changeWeapon(role: Role): void {
-    this.soldier.role = role;
-    this.soldier.weapon = createWeaponInstance(role);
-    this.createWeaponModel();
+  const bobX = isMoving ? Math.cos(game.bobTimer * 0.5) * (game.isADS ? 0.002 : 0.011) * bobScale : 0;
+  const bobY = isMoving
+    ? Math.abs(Math.sin(game.bobTimer)) * (game.isADS ? 0.002 : 0.012) * bobScale
+    : Math.sin(game.bobTimer) * 0.002 * bobScale;
+
+  const targetWeaponPos = game.isADS ? weaponView.ads : weaponView.hip; // ads auto-aligned to sight
+
+  weaponRecoilOffset.z = THREE.MathUtils.lerp(weaponRecoilOffset.z, 0, Math.min(1, dt * 16));
+  weaponRecoilOffset.pitch = THREE.MathUtils.lerp(weaponRecoilOffset.pitch, 0, Math.min(1, dt * 14));
+
+  fpWeaponRoot.position.lerp(
+    new THREE.Vector3(
+      targetWeaponPos.x + bobX,
+      targetWeaponPos.y - bobY,
+      targetWeaponPos.z + weaponRecoilOffset.z,
+    ),
+    Math.min(1, dt * 16),
+  );
+
+  const reloadRoll = game.humanPlayer.reloading
+    ? Math.sin((1 - game.humanPlayer.reloadTimer / (game.humanPlayer.reloadTotal || 1.75)) * Math.PI) * 0.55
+    : 0;
+  const sprintPitch = isSprinting ? -0.26 : 0;
+  fpWeaponRoot.rotation.set(
+    weaponRecoilOffset.pitch + sprintPitch - reloadRoll * 0.4,
+    isSprinting ? 0.35 : 0,
+    reloadRoll,
+  );
+
+  // Decay Muzzle Flash
+  if (muzzleFlashMesh.visible) {
+    muzzlePointLight.intensity = Math.max(0, muzzlePointLight.intensity - dt * 24);
+    if (muzzlePointLight.intensity <= 0.1) muzzleFlashMesh.visible = false;
   }
 
-  applyCustomWeapon(customData: any): void {
-    if (customData.custom) {
-      this.soldier.weapon.customModel = customData.custom.model.clone();
-    } else if (customData.preset) {
-      this.soldier.weapon.customModel = null;
-    }
-    this.createWeaponModel();
-  }
+  // Dynamic Crosshair Spread
+  const spreadPx = game.isADS
+    ? 4
+    : (isSprinting ? 22 : isMoving ? 15 : 9) * pw.chScale + weaponRecoilOffset.z * 140;
+  $('ch-top').style.transform = `translateY(${-spreadPx}px)`;
+  $('ch-bottom').style.transform = `translateY(${spreadPx}px)`;
+  $('ch-left').style.transform = `translateX(${-spreadPx}px)`;
+  $('ch-right').style.transform = `translateX(${spreadPx}px)`;
+  $('crosshair-container').style.opacity = game.isADS ? '0.25' : '1';
 
-  resetWeapon(): void {
-    this.soldier.weapon.customModel = null;
-    this.createWeaponModel();
-  }
-
-  getCamera(): THREE.Camera {
-    return getCamera();
-  }
-
-  getCameraPivot(): THREE.Group {
-    return this.cameraPivot;
-  }
-
-  getSoldier(): Soldier {
-    return this.soldier;
-  }
-
-  dispose(): void {
-    getScene().remove(this.cameraPivot);
-    HumanPlayer.instance = null;
+  // Full-auto: hold LMB. Semi / bolt / pump: one shot per click (180ms click buffer)
+  const nowMs = performance.now();
+  let wantsShot = pw.auto ? game.isMouseDown : game.pendingShotTime > 0 && nowMs - game.pendingShotTime < 180;
+  if (isSprinting) {
+    wantsShot = false;
+    game.pendingShotTime = 0;
+  } // no firing while sprinting
+  if (wantsShot && !matchState.paused) {
+    const shootDir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+    const spread =
+      (game.isADS ? pw.spreadAds : isMoving ? pw.spreadMove : pw.spreadHip) * (1 - 0.3 * crouchK);
+    if (fireWeapon(game.humanPlayer, camera.position.clone(), shootDir, spread)) game.pendingShotTime = 0;
   }
 }
+
+// =========================================================================
+// 14. AI BOT TACTICAL BRAIN (A* GRAPH PATHFINDING + WHISKER AVOIDANCE)
+// =========================================================================

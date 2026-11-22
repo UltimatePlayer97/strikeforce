@@ -1,34 +1,28 @@
 {
-  description = "Strikeforce 6v6 development environment";
+  description = "Cloudflare Worker Development Environment";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs =
-    { self, nixpkgs }:
-    let
-      systems = [
-        "x86_64-linux"
-      ];
-      forAllSystems =
-        f:
-        nixpkgs.lib.genAttrs systems (
-          system:
-          f (import nixpkgs { inherit system; })
-        );
-    in
-    {
-      devShells = forAllSystems (
-        pkgs: {
-          default = pkgs.mkShell {
-            packages = with pkgs; [
-              bun
-              typescript
-              cacert
-            ];
-          };
-        }
-      );
-    };
+  outputs = { self, nixpkgs, flake-utils }:
+    flake-utils.lib.eachDefaultSystem (system:
+      let
+        pkgs = nixpkgs.legacyPackages.${system};
+      in
+      {
+        devShells.default = pkgs.mkShell {
+          buildInputs = with pkgs; [
+            bun
+            prettier
+            typescript
+          ];
+
+          shellHook = ''
+          	export SSL_CERT_FILE="${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+           '';
+        };
+      }
+    );
 }
