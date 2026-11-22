@@ -118,9 +118,7 @@ export class NetClient {
   p2pReady = 0;
 
   owns(s: Soldier): boolean {
-    const result = !this.active || Number(s.id) === this.slot || (this.isHost && !this.humans.has(Number(s.id)));
-    if (this.active) console.log('[owns]', { soldierId: s.id, mySlot: this.slot, isHost: this.isHost, humans: [...this.humans], result });
-    return result;
+    return !this.active || Number(s.id) === this.slot || (this.isHost && !this.humans.has(Number(s.id)));
   }
   v3(v: THREE.Vector3): Vec3Tuple {
     return [+v.x.toFixed(2), +v.y.toFixed(2), +v.z.toFixed(2)];
@@ -135,7 +133,6 @@ export class NetClient {
     const expected = Math.max(0, this.humans.size - 1);
     const ready = [...this.peers.values()].filter((p) => p.ready).length;
     const useWebRTC = expected > 0 && ready === expected;
-    console.log('[send]', o.t, { slot: this.slot, useWebRTC, expected, ready, humans: this.humans.size, peers: this.peers.size, mid: packet.mid });
     if (useWebRTC) {
       const channelName = ['s', 'b'].includes(o.t) ? 'state' : 'events';
       for (const peer of this.peers.values()) {

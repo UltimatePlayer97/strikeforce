@@ -185,7 +185,8 @@ export function damageSoldier(
   spawnImpactSparks(hitPoint, true);
 
   if (attacker && attacker.isPlayer) {
-    triggerHitmarker(isHeadshot || target.hp <= 0);
+    const spawnProtected = target.spawnProtection > 0;
+    triggerHitmarker(isHeadshot || target.hp <= 0, spawnProtected);
     sfx.playHitmarker(isHeadshot || target.hp <= 0);
   }
 

@@ -99,9 +99,13 @@ export function addKillfeedEntry(killer: Soldier, victim: Soldier, isHeadshot: b
 
 let hitmarkerTimer: ReturnType<typeof setTimeout> | undefined;
 
-export function triggerHitmarker(isKillOrHeadshot: boolean): void {
+export function triggerHitmarker(isKillOrHeadshot: boolean, isSpawnProtected = false): void {
   const hitmarkerEl = $('hitmarker');
-  hitmarkerEl.style.color = isKillOrHeadshot ? '#ef4444' : '#ffffff';
+  if (isSpawnProtected) {
+    hitmarkerEl.style.color = '#60a5fa'; // blue for spawn protection
+  } else {
+    hitmarkerEl.style.color = isKillOrHeadshot ? '#ef4444' : '#ffffff';
+  }
   hitmarkerEl.style.opacity = '1';
   clearTimeout(hitmarkerTimer);
   hitmarkerTimer = setTimeout(() => {
