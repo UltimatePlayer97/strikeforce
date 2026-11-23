@@ -118,12 +118,15 @@ export class NetClient {
   p2pReady = 0;
 
   owns(s: Soldier): boolean {
-    return !this.active || Number(s.id) === this.slot || (this.isHost && !this.humans.has(Number(s.id)));
+    const result = !this.active || Number(s.id) === this.slot || (this.isHost && !this.humans.has(Number(s.id)));
+    console.log('[owns]', { soldierId: s.id, mySlot: this.slot, isHost: this.isHost, humans: [...this.humans], result });
+    return result;
   }
   v3(v: THREE.Vector3): Vec3Tuple {
     return [+v.x.toFixed(2), +v.y.toFixed(2), +v.z.toFixed(2)];
   }
   send(o: NetMessage): void {
+    console.log('[send] ENTER', o.t, { active: this.active, ws: !!this.ws, wsReady: this.ws?.readyState, slot: this.slot, isHost: this.isHost });
     if (!this.active || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     if (o.t === 'rtc' || o.t === 'ping' || o.t === 'pong') {
       this.ws.send(JSON.stringify(o));
@@ -133,6 +136,7 @@ export class NetClient {
     const expected = Math.max(0, this.humans.size - 1);
     const ready = [...this.peers.values()].filter((p) => p.ready).length;
     const useWebRTC = expected > 0 && ready === expected;
+    console.log('[send]', o.t, { slot: this.slot, useWebRTC, expected, ready, humans: this.humans.size, peers: this.peers.size, mid: packet.mid });
     if (useWebRTC) {
       const channelName = ['s', 'b'].includes(o.t) ? 'state' : 'events';
       for (const peer of this.peers.values()) {
@@ -154,7 +158,7 @@ export class NetClient {
     return new THREE.Vector3(a[0], a[1], a[2]);
   }
   okVec(a: unknown): a is Vec3Tuple {
-    return Array.isArray(a) && a.length === 3 && a.every(Number.isFinite);
+    return Array.isArray(a) && a.length === 3 && a.every(v => Number.isFinite(Number(v)));
   }
 
   applyRoster(roster: RosterEntry[]): void {
@@ -696,11 +700,13 @@ export class NetClient {
         const t = this.soldier(m.to),
           a = this.soldier(m.from);
         console.log('[handle] h event received:', { from: m.from, to: m.to, dmg: m.d, hs: m.hs, p: m.p, dir: m.dir, targetExists: !!t, attackerExists: !!a, ownsTarget: t ? this.owns(t) : false, okVecP: this.okVec(m.p), okVecDir: this.okVec(m.dir), mySlot: this.slot, isHost: this.isHost });
-        if (!t || !a || !this.owns(t) || !this.okVec(m.p) || !this.okVec(m.dir)) {
-          console.log('[handle] h event REJECTED:', { reason: !t ? 'no target' : !a ? 'no attacker' : !this.owns(t) ? 'not owner' : !this.okVec(m.p) ? 'bad p' : 'bad dir' });
-          break;
-        }
+        if (!t) { console.log('[handle] h REJECTED: no target'); break; }
+        if (!a) { console.log('[handle] h REJECTED: no attacker'); break; }
+        if (!this.owns(t)) { console.log('[handle] h REJECTED: not owner of target', { targetId: m.to, mySlot: this.slot, isHost: this.isHost, humans: [...this.humans] }); break; }
+        if (!this.okVec(m.p)) { console.log('[handle] h REJECTED: bad p vector', { p: m.p, okVec: this.okVec(m.p) }); break; }
+        if (!this.okVec(m.dir)) { console.log('[handle] h REJECTED: bad dir vector', { dir: m.dir, okVec: this.okVec(m.dir) }); break; }
         const dmg = Math.min(100, Math.max(0, Number(m.d) || 0));
+        console.log('[handle] h ACCEPTED, applying damage:', { targetId: t.id, attackerId: a.id, dmg });
         damageSoldier(t, a, dmg, this.vec(m.p), this.vec(m.dir), !!m.hs);
         break;
       }

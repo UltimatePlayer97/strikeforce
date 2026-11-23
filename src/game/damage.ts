@@ -145,24 +145,58 @@ export function damageSoldier(
   // Strict Zero Friendly Fire
   if (attacker && attacker.team === target.team) return;
 
-  // Brief spawn protection prevents immediate respawn death camping.
-  if (target.spawnProtection > 0) {
-    spawnImpactSparks(hitPoint, false);
-    if (target.isPlayer) showSpawnProtectionStatus(Math.ceil(target.spawnProtection));
+  const targetOwner = net.active && net.owns(target);
+
+  // If we own the target: authoritative checks + apply damage
+  if (targetOwner) {
+    // Brief spawn protection prevents immediate respawn death camping.
+    if (target.spawnProtection > 0) {
+      spawnImpactSparks(hitPoint, false);
+      if (target.isPlayer) showSpawnProtectionStatus(Math.ceil(target.spawnProtection));
+      if (attacker && attacker.isPlayer) {
+        triggerHitmarker(false, true); // blue hitmarker for spawn protection
+        sfx.playHitmarker(false);
+      }
+      return;
+    }
+
+    target.hp = Math.max(0, target.hp - damage);
+    target.regenWait = REGEN_DELAY;
+    spawnImpactSparks(hitPoint, true);
+
+    if (attacker && attacker.isPlayer) {
+      const lethal = isHeadshot || target.hp <= 0;
+      triggerHitmarker(lethal, false);
+      sfx.playHitmarker(lethal);
+    }
+
+    if (target.isPlayer) {
+      sfx.playDamageTaken();
+      triggerDamageDirection(sourcePos || (attacker ? attacker.pos : hitPoint));
+      const vig = $('damage-vignette');
+      vig.style.opacity = '0.9';
+      setTimeout(() => {
+        if (target.alive) vig.style.opacity = target.hp < 35 ? '0.45' : '0';
+      }, 180);
+    }
+
+    if (target.hp <= 0) {
+      eliminateSoldier(target, attacker, hitPoint, bulletDir, isHeadshot);
+    }
     return;
   }
 
-  if (net.active && !net.owns(target)) {
-    // Explosion simulation fans out damage to every authoritative owner;
-    // non-owners must stay silent so each victim takes the hit once.
+  // We don't own the target: give attacker feedback, send event to target owner
+  if (attacker && attacker.isPlayer) {
+    // Assume not spawn protected locally (authoritative check happens on target owner)
+    const lethal = isHeadshot || target.hp - damage <= 0;
+    triggerHitmarker(lethal, false);
+    sfx.playHitmarker(lethal);
+  }
+
+  if (net.active) {
     if (localOnly) return;
-    // Target simulated elsewhere: local feedback now, owner applies real damage + announces the kill
     spawnImpactSparks(hitPoint, true);
-    if (attacker && attacker.isPlayer) {
-      const lethal = isHeadshot || target.hp - damage <= 0;
-      triggerHitmarker(lethal);
-      sfx.playHitmarker(lethal);
-    }
     if (attacker && net.owns(attacker)) {
       console.log('[damageSoldier] Sending hit event:', { from: attacker.id, to: target.id, dmg: damage, hs: isHeadshot, slot: net.slot, ownsAttacker: net.owns(attacker), ownsTarget: net.owns(target) });
       net.send({
@@ -177,31 +211,6 @@ export function damageSoldier(
     } else {
       console.log('[damageSoldier] NOT sending hit event:', { attacker: attacker?.id, netActive: net.active, ownsAttacker: attacker ? net.owns(attacker) : false, ownsTarget: net.owns(target) });
     }
-    return;
-  }
-
-  target.hp = Math.max(0, target.hp - damage);
-  target.regenWait = REGEN_DELAY;
-  spawnImpactSparks(hitPoint, true);
-
-  if (attacker && attacker.isPlayer) {
-    const spawnProtected = target.spawnProtection > 0;
-    triggerHitmarker(isHeadshot || target.hp <= 0, spawnProtected);
-    sfx.playHitmarker(isHeadshot || target.hp <= 0);
-  }
-
-  if (target.isPlayer) {
-    sfx.playDamageTaken();
-    triggerDamageDirection(sourcePos || (attacker ? attacker.pos : hitPoint));
-    const vig = $('damage-vignette');
-    vig.style.opacity = '0.9';
-    setTimeout(() => {
-      if (target.alive) vig.style.opacity = target.hp < 35 ? '0.45' : '0';
-    }, 180);
-  }
-
-  if (target.hp <= 0) {
-    eliminateSoldier(target, attacker, hitPoint, bulletDir, isHeadshot);
   }
 }
 
