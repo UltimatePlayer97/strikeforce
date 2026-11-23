@@ -211,6 +211,25 @@ export function damageSoldier(
     } else {
       console.log('[damageSoldier] NOT sending hit event:', { attacker: attacker?.id, netActive: net.active, ownsAttacker: attacker ? net.owns(attacker) : false, ownsTarget: net.owns(target) });
     }
+  } else {
+    // Singleplayer/offline: no network, apply damage locally
+    target.hp = Math.max(0, target.hp - damage);
+    target.regenWait = REGEN_DELAY;
+    spawnImpactSparks(hitPoint, true);
+
+    if (target.isPlayer) {
+      sfx.playDamageTaken();
+      triggerDamageDirection(sourcePos || (attacker ? attacker.pos : hitPoint));
+      const vig = $('damage-vignette');
+      vig.style.opacity = '0.9';
+      setTimeout(() => {
+        if (target.alive) vig.style.opacity = target.hp < 35 ? '0.45' : '0';
+      }, 180);
+    }
+
+    if (target.hp <= 0) {
+      eliminateSoldier(target, attacker, hitPoint, bulletDir, isHeadshot);
+    }
   }
 }
 
